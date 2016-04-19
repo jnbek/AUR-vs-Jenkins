@@ -55,6 +55,7 @@ sub main {
     @{$dirs} = glob("*");
 
     foreach my $dir ( @{$dirs} ) {
+        print $dir, "\n";
         $jenkins->create_job( $dir, $self->xml_tt($dir) )
           unless grep { /$dir/ } @{$jobs};
     }
@@ -148,5 +149,5 @@ rm -rf $build_path;
   <buildWrappers/>
 </project>
     };
-    return \$xml;
+    return $xml;
 }
