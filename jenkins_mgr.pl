@@ -54,8 +54,6 @@ sub main {
     chdir( $self->aur_path );
     @{$dirs} = glob("*");
 
-    exit(0);
-
     foreach my $dir ( @{$dirs} ) {
         $jenkins->create_job( $dir, $self->xml_tt($dir) )
           unless grep { /$dir/ } @{$jobs};
