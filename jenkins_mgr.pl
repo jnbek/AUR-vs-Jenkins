@@ -15,7 +15,7 @@ our $version = qv(0.2.0);
 
 sub conf_file { "$HOME/etc/jenkins.yaml" }
 
-sub build_path { "$HOME/aur_management/build_root/" }
+sub build_path { "$HOME/aur_management/build_root" }
 
 sub aur_path { "$HOME/aur4" }
 
@@ -55,15 +55,28 @@ sub main {
     @{$dirs} = glob("*");
 
     foreach my $dir ( @{$dirs} ) {
-        print $dir, "\n";
-        $jenkins->create_job( $dir, $self->xml_tt($dir) )
+        print "Add $dir\n"
+          unless grep { /$dir/ } @{$jobs};
+        my $result = $jenkins->create_job( $dir, $self->xml_tt($dir) )
           unless grep { /$dir/ } @{$jobs};
     }
     foreach my $job ( @{$jobs} ) {
+        print "Del $job\n"             unless -d sprintf( "%s/%s", $self->aur_path, $job );
         $jenkins->delete_project($job) unless -d sprintf( "%s/%s", $self->aur_path, $job );
     }
-    $self->trigger_all($jobs) if $self->trigger_all;
+    $self->trigger_all($jobs) if $self->trigger;
 
+    return 0;
+}
+
+sub trigger_all {
+    my $self = shift;
+    my $jobs = shift;
+    foreach my $job ( @{$jobs} ) {
+        print "Triggering $job\n";
+        $self->jenkins->trigger_build($job);
+        print Dumper($self->jenkins->response_code);
+    }
     return 0;
 }
 
@@ -78,7 +91,7 @@ sub dump_project_config {
 sub xml_tt {
     my $self         = shift;
     my $project      = shift;
-    my $artifact_str = sprintf( "%s.tar.xz", $project );
+    my $artifact_str = sprintf( "%s*.tar.xz", $project );
     my $aur_path     = sprintf( "%s/%s", $self->aur_path, $project );
     my $build_path   = sprintf( "%s/%s", $self->build_path, $project );
     my $xml          = qq{<?xml version='1.0' encoding='UTF-8'?>
@@ -130,7 +143,6 @@ sub xml_tt {
       <command>cp -rv $aur_path $build_path
 cd $build_path; 
 makepkg;
-yaourt -U $artifact_str --noconfirm
 cp -v $artifact_str \$WORKSPACE;
 rm -rf $build_path;
 </command>
