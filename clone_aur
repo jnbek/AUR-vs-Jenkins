@@ -1,0 +1,6 @@
+#!/usr/bin/env zsh
+REPO=$1
+echo $REPO
+GIT=$(whence -p git);
+cd ${HOME}/aur4/
+$GIT clone ssh+git://aur@aur.archlinux.org/${REPO}.git
