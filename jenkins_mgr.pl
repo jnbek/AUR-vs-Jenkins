@@ -139,9 +139,9 @@ sub xml_tt {
   <concurrentBuild>true</concurrentBuild>
   <builders>
     <hudson.tasks.Shell>
-      <command>cp -rv $aur_path $build_path
+      <command>cp -rv $aur_path $self->build_path
 cd $build_path; 
-makepkg;
+makepkg -s -f;
 cp -v $artifact_str \$WORKSPACE;
 rm -rf $build_path;
 </command>
