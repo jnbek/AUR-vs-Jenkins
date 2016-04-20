@@ -75,7 +75,6 @@ sub trigger_all {
     foreach my $job ( @{$jobs} ) {
         print "Triggering $job\n";
         $self->jenkins->trigger_build($job);
-        print Dumper($self->jenkins->response_code);
     }
     return 0;
 }
