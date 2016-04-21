@@ -9,7 +9,7 @@ use Jenkins::API;
 use Env qw(HOME);
 use YAML qw(LoadFile);
 
-our $version = qv(0.2.0);
+our $version = qv(0.3.0);
 
 ( bless {}, __PACKAGE__ )->main();
 
@@ -90,10 +90,81 @@ sub dump_project_config {
 sub xml_tt {
     my $self         = shift;
     my $project      = shift;
+    my $www_root     = "$HOME/var/aur_pkgs";
     my $artifact_str = sprintf( "%s*.tar.xz", $project );
     my $aur_path     = sprintf( "%s/%s", $self->aur_path, $project );
     my $build_path   = sprintf( "%s/%s", $self->build_path, $project );
     my $xml          = qq{<?xml version='1.0' encoding='UTF-8'?>
+<project>
+  <actions/>
+  <description>Build the PKGBUILD at https://aur.archlinux.org/packages/$project</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <jenkins.model.BuildDiscarderProperty>
+      <strategy class="hudson.tasks.LogRotator">
+        <daysToKeep>-1</daysToKeep>
+        <numToKeep>1</numToKeep>
+        <artifactDaysToKeep>-1</artifactDaysToKeep>
+        <artifactNumToKeep>1</artifactNumToKeep>
+      </strategy>
+    </jenkins.model.BuildDiscarderProperty>
+  </properties>
+  <scm class="hudson.plugins.git.GitSCM" plugin="git\@2.4.4">
+    <configVersion>2</configVersion>
+    <userRemoteConfigs>
+      <hudson.plugins.git.UserRemoteConfig>
+        <url>ssh+git://aur\@aur.archlinux.org/$project.git</url>
+      </hudson.plugins.git.UserRemoteConfig>
+    </userRemoteConfigs>
+    <branches>
+      <hudson.plugins.git.BranchSpec>
+        <name>*/master</name>
+      </hudson.plugins.git.BranchSpec>
+    </branches>
+    <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+    <submoduleCfg class="list"/>
+    <extensions>
+      <hudson.plugins.git.extensions.impl.CleanCheckout/>
+      <hudson.plugins.git.extensions.impl.CleanBeforeCheckout/>
+    </extensions>
+  </scm>
+  <canRoam>true</canRoam>
+  <disabled>false</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers>
+    <hudson.triggers.TimerTrigger>
+      <spec>\@weekly</spec>
+    </hudson.triggers.TimerTrigger>
+  </triggers>
+  <concurrentBuild>true</concurrentBuild>
+  <builders>
+    <hudson.tasks.Shell>
+      <command>makepkg -s -f;
+cp -v $artifact_str $www_root;
+</command>
+    </hudson.tasks.Shell>
+  </builders>
+  <publishers>
+    <hudson.tasks.ArtifactArchiver>
+      <artifacts>$artifact_str</artifacts>
+      <allowEmptyArchive>true</allowEmptyArchive>
+      <onlyIfSuccessful>true</onlyIfSuccessful>
+      <fingerprint>false</fingerprint>
+      <defaultExcludes>true</defaultExcludes>
+      <caseSensitive>true</caseSensitive>
+    </hudson.tasks.ArtifactArchiver>
+  </publishers>
+  <buildWrappers/>
+</project>
+    };
+    return $xml;
+}
+
+__END__
+
+Backup XML
+
 <project>
   <actions/>
   <description>Build the PKGBUILD at https://aur.archlinux.org/packages/$project</description>
@@ -159,6 +230,3 @@ rm -rf $build_path;
   </publishers>
   <buildWrappers/>
 </project>
-    };
-    return $xml;
-}
