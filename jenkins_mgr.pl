@@ -56,9 +56,9 @@ sub main {
 
     foreach my $dir ( @{$dirs} ) {
         print "Add $dir\n"
-          unless grep { /$dir/ } @{$jobs};
+          unless grep { /^$dir$/ } @{$jobs};
         my $result = $jenkins->create_job( $dir, $self->xml_tt($dir) )
-          unless grep { /$dir/ } @{$jobs};
+          unless grep { /^$dir$/ } @{$jobs};
     }
     foreach my $job ( @{$jobs} ) {
         print "Del $job\n"             unless -d sprintf( "%s/%s", $self->aur_path, $job );
