@@ -6,44 +6,61 @@ use warnings;
 use Getopt::Long;
 use Data::Dumper;
 use Jenkins::API;
-use Env qw(HOME);
+use FindBin qw($Bin);
 use YAML qw(LoadFile);
 
-our $version = qv(0.3.0);
+our $version = qv(0.5.0);
 
 ( bless {}, __PACKAGE__ )->main();
 
-sub conf_file { "$HOME/etc/jenkins.yaml" }
-
-sub build_path { "$HOME/aur_management/build_root" }
-
-sub aur_path { "$HOME/aur4" }
-
 #Dummy subs cuz I'm lazy...
-sub trigger   { shift->{'trigger'}; }
-sub verbose   { shift->{'verbose'} }     #TODO: Implement this
-sub dump_conf { shift->{'dump_conf'} }
+sub trigger_all { shift->{'trigger_all'}; }
+sub trigger     { shift->{'trigger'}; }
+sub verbose     { shift->{'verbose'} }        #TODO: Implement this
+sub dump_conf   { shift->{'dump_conf'} }
+
+sub conf_file {
+    shift->{'conf_file'} ||= do { "$Bin/conf/jenkins-config.yaml" }
+}
+
+sub config {
+    my $self = shift;
+    my $conf = $self->{'__conf_obj'} ||= do { LoadFile( $self->conf_file ) };
+    return $conf;
+}
+
+sub aur_path {
+    my $self = shift;
+    return $self->{'__aur_path'} ||= do { $self->config->{'conf'}->{'aur_root'} };
+}
+
+sub web_path {
+    my $self = shift;
+    return $self->{'__web_path'} ||= do { $self->config->{'conf'}->{'web_root'} };
+}
 
 sub options {
     my $self = shift;
     return GetOptions(
-        "trigger|ta"  => \$self->{'trigger'},
-        "verbose|v|V" => \$self->{'verbose'},
-        "dump_conf=s" => \$self->{'dump_conf'},
+        "config|c=s"     => \$self->{'conf_file'},
+        "trigger_all|ta" => \$self->{'trigger_all'},
+        "trigger|t=s"    => \$self->{'trigger'},
+        "verbose|v|V"    => \$self->{'verbose'},
+        "dump_conf=s"    => \$self->{'dump_conf'},
     );
 }
 
 sub jenkins {
     my $self = shift;
-    my $conf = LoadFile( $self->conf_file );
-    return $self->{'__jenkins_obj'} ||= do { Jenkins::API->new($conf) };
+    my $conf = $self->config->{'auth'};
+    return $self->{'__jenkins_obj'}
+      ||= do { Jenkins::API->new($conf) };
 }
 
 sub main {
     my $self = shift;
     my ( $jobs, $dirs ) = [];
     $self->options if (@ARGV);
-
     # Just dump XML if we're passed dump_conf and then bail
     return $self->dump_project_config( $self->dump_conf ) if $self->dump_conf;
     # Otherwise, do all the things.
@@ -53,27 +70,37 @@ sub main {
     my $count    = map { push @{$jobs}, $_->{'name'} } @{$jobs_ref};
     chdir( $self->aur_path );
     @{$dirs} = glob("*");
-
     foreach my $dir ( @{$dirs} ) {
-        print "Add $dir\n"
-          unless grep { /^$dir$/ } @{$jobs};
-        my $result = $jenkins->create_job( $dir, $self->xml_tt($dir) )
-          unless grep { /^$dir$/ } @{$jobs};
+        unless ( grep { /^$dir$/ } @{$jobs} ) {
+            print "Adding new job: $dir\n";
+            $jenkins->create_job( $dir, $self->xml_tt($dir) );
+        }
     }
     foreach my $job ( @{$jobs} ) {
-        print "Del $job\n"             unless -d sprintf( "%s/%s", $self->aur_path, $job );
-        $jenkins->delete_project($job) unless -d sprintf( "%s/%s", $self->aur_path, $job );
+        unless ( -d sprintf( "%s/%s", $self->aur_path, $job ) ) {
+            print "Deleting job: $job\n";
+            $jenkins->delete_project($job);
+        }
     }
-    $self->trigger_all($jobs) if $self->trigger;
+    $self->trigger_job( $self->trigger ) if $self->trigger;
+    $self->trigger_all_jobs($jobs) if $self->trigger_all;
 
     return 0;
 }
 
-sub trigger_all {
+sub trigger_job {
+    my $self = shift;
+    my $job  = shift;
+    print "Triggering Job: $job\n";
+    $self->jenkins->trigger_build($job);
+    return 0;
+}
+
+sub trigger_all_jobs {
     my $self = shift;
     my $jobs = shift;
     foreach my $job ( @{$jobs} ) {
-        print "Triggering $job\n";
+        print "Triggering Job: $job\n";
         $self->jenkins->trigger_build($job);
     }
     return 0;
@@ -90,10 +117,8 @@ sub dump_project_config {
 sub xml_tt {
     my $self         = shift;
     my $project      = shift;
-    my $www_root     = "$HOME/var/aur_pkgs";
+    my $www_root     = $self->web_path;
     my $artifact_str = sprintf( "%s*.tar.xz", $project );
-    my $aur_path     = sprintf( "%s/%s", $self->aur_path, $project );
-    my $build_path   = sprintf( "%s/%s", $self->build_path, $project );
     my $xml          = qq{<?xml version='1.0' encoding='UTF-8'?>
 <project>
   <actions/>
@@ -160,73 +185,4 @@ cp -v $artifact_str $www_root;
     };
     return $xml;
 }
-
 __END__
-
-Backup XML
-
-<project>
-  <actions/>
-  <description>Build the PKGBUILD at https://aur.archlinux.org/packages/$project</description>
-  <keepDependencies>false</keepDependencies>
-  <properties>
-    <jenkins.model.BuildDiscarderProperty>
-      <strategy class="hudson.tasks.LogRotator">
-        <daysToKeep>-1</daysToKeep>
-        <numToKeep>1</numToKeep>
-        <artifactDaysToKeep>-1</artifactDaysToKeep>
-        <artifactNumToKeep>1</artifactNumToKeep>
-      </strategy>
-    </jenkins.model.BuildDiscarderProperty>
-  </properties>
-  <scm class="hudson.plugins.git.GitSCM" plugin="git\@2.4.4">
-    <configVersion>2</configVersion>
-    <userRemoteConfigs>
-      <hudson.plugins.git.UserRemoteConfig>
-        <url>ssh+git://aur\@aur.archlinux.org/$project.git</url>
-      </hudson.plugins.git.UserRemoteConfig>
-    </userRemoteConfigs>
-    <branches>
-      <hudson.plugins.git.BranchSpec>
-        <name>*/master</name>
-      </hudson.plugins.git.BranchSpec>
-    </branches>
-    <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
-    <submoduleCfg class="list"/>
-    <extensions>
-      <hudson.plugins.git.extensions.impl.CleanCheckout/>
-      <hudson.plugins.git.extensions.impl.CleanBeforeCheckout/>
-    </extensions>
-  </scm>
-  <canRoam>true</canRoam>
-  <disabled>false</disabled>
-  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
-  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
-  <triggers>
-    <hudson.triggers.TimerTrigger>
-      <spec>\@weekly</spec>
-    </hudson.triggers.TimerTrigger>
-  </triggers>
-  <concurrentBuild>true</concurrentBuild>
-  <builders>
-    <hudson.tasks.Shell>
-      <command>cp -rv $aur_path $self->build_path
-cd $build_path; 
-makepkg -s -f;
-cp -v $artifact_str \$WORKSPACE;
-rm -rf $build_path;
-</command>
-    </hudson.tasks.Shell>
-  </builders>
-  <publishers>
-    <hudson.tasks.ArtifactArchiver>
-      <artifacts>$artifact_str</artifacts>
-      <allowEmptyArchive>true</allowEmptyArchive>
-      <onlyIfSuccessful>true</onlyIfSuccessful>
-      <fingerprint>false</fingerprint>
-      <defaultExcludes>true</defaultExcludes>
-      <caseSensitive>true</caseSensitive>
-    </hudson.tasks.ArtifactArchiver>
-  </publishers>
-  <buildWrappers/>
-</project>

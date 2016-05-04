@@ -1,0 +1,8 @@
+---
+auth:
+  api_key: username
+  api_pass: api_key
+  base_url: http://127.0.0.1:8090
+conf:
+  aur_root: /path/to/aur/gitroot
+  www_root: /path/to/webroot
