@@ -1,0 +1,253 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use version;
+
+use JSON;
+use HTTP::Tiny;
+use Data::Dumper;
+use Env qw(HOME);
+use File::Find ();
+use Template::Alloy;
+use MetaCPAN::Client;
+use CPANPLUS::Backend;
+use WWW::AUR::PKGBUILD;
+
+use vars qw(*name *dir *prune);
+
+( bless {}, __PACKAGE__ )->main();
+
+# Start Configuration:
+
+sub html_file { "$HOME/var/html/aur_versions.html" }
+
+sub aur4_root { "$HOME/aur4" }
+
+# End Configuration
+
+sub tt_obj { Template::Alloy->new }
+
+sub ignore_pkgs { [qw(perl-xls2csv perl-www-checksite perl-file-dirwalk perl-class-dbi-frozen)] }
+
+sub time_now { scalar localtime }
+
+sub cpan {
+    shift->{'__cpan_object'} ||= do { CPANPLUS::Backend->new( { verbose => 0 } ) }
+}
+
+sub mcpan {
+    shift->{'__mcpan_object'} ||= do { MetaCPAN::Client->new() }
+}
+
+sub http {
+    shift->{'__http_object'} ||= do { HTTP::Tiny->new; }
+}
+
+sub pkgbuild {
+    my $self = shift;
+    return WWW::AUR::PKGBUILD->new(
+        do { local ( @ARGV, $/ ) = shift; <> }
+    );
+}
+
+sub asset_versions {
+    {
+        jquery    => '2.2.3',
+        respondjs => '1.4.2',
+        bootstrap => '3.3.6',
+        html5shiv => '3.7.2',
+    };
+}
+
+sub main {
+    my $self = shift;
+    $self->{'results'} = [];
+    *name              = *File::Find::name;
+    *dir               = *File::Find::dir;
+    *prune             = *File::Find::prune;
+
+    my $wanted = sub {
+        my ( $dev, $ino, $mode, $nlink, $uid, $gid );
+
+        ( ( $dev, $ino, $mode, $nlink, $uid, $gid ) = lstat($_) )
+          && -f _
+          && /^PKGBUILD\z/s
+#          && print("$name\n")
+          && $self->parse_pkg( $name, $dir, $_ );
+    };
+    my $finder = File::Find::find( { wanted => $wanted }, $self->aur4_root );
+    $self->process_tt;
+
+}
+
+sub parse_pkg {
+    my $self     = shift;
+    my $path     = shift;
+    my $dir      = shift;
+    my $file     = shift;
+    my $suffix   = 'others';
+    my $pkg_name = ( split '/', $dir )[-1];
+    return [] if grep ( /$pkg_name/, @{ $self->ignore_pkgs } );
+    my $method = join( '_',
+        'parse', $pkg_name =~ m/^perl/ ? 'perl' : $pkg_name =~ m/^nodejs/ ? 'node' : $suffix );
+    my $results = $self->$method($path);
+}
+
+sub parse_perl {
+    my $self        = shift;
+    my $pkgbuild    = shift;
+    my $pkbd        = $self->pkgbuild($pkgbuild);
+    my $cpan_module = $pkbd->url;
+    my $fields      = { $pkbd->fields };
+    my $url         = shift [ grep { /cpan/ } @{ $fields->{'source'} } ];
+    $cpan_module =~ s#/$##;
+    $cpan_module =~ s/^.+\/(.*)/$1/;
+
+    # Use CPANPLUS first, if we get a bunk version, fallback to MetaCPAN
+    my $mod_ver = 0;
+    my $mod_obj = $self->cpan->parse_module( module => $cpan_module );
+    if ($mod_obj->version =~ m/^\D/) {
+        my $mod_obj = eval { $self->mcpan->release($cpan_module) };
+        if($@) {
+            $mod_ver = "UNKNOWN Error";
+            $@ = 0;
+        }
+        else {
+            $mod_ver = $mod_obj->version_numified;
+        }
+    }
+    else {
+        $mod_ver = $mod_obj->version;
+    }
+    push @{ $self->{'results'} },
+      { $pkbd->pkgname => { pkgbuild => $pkbd->pkgver, upstream => $mod_ver } };
+#    if ( "$pkbd->pkgver" ne "$mod_obj->version" ) {
+#        push @{ $self->{'results'} },
+#          { $pkbd->pkgname => { pkgbuild => $pkbd->pkgver, upstream => $mod_obj->version } };
+#    }
+    return 0;
+}
+
+sub parse_node {
+    my $self     = shift;
+    my $pkgbuild = shift;
+    my $pkbd     = $self->pkgbuild($pkgbuild);
+    my $pkgname  = $pkbd->pkgname;
+    if ( $pkgname =~ m/^nodejs-/g ) {
+        $pkgname =~ s/^nodejs-//g;
+    }
+
+    my $url      = "http://registry.npmjs.org/" . $pkgname;
+    my $res      = $self->http->get($url);
+    my $hash     = from_json( $res->{content} );
+    my $latest   = $hash->{'dist-tags'}->{'latest'};
+    my $versions = $hash->{'versions'};
+    push @{ $self->{'results'} },
+      { $pkbd->pkgname =>
+          { pkgbuild => $pkbd->pkgver, upstream => $versions->{$latest}->{'version'} } };
+#    if ( "$pkbd->pkgver" ne "$versions->{$latest}->{'version'}" ) {
+#        push @{ $self->{'results'} },
+#          { $pkbd->pkgname => { pkgbuild => $pkbd->pkgver, upstream => $versions->{$latest}->{'version'} } };
+#    }
+}
+
+sub parse_others {
+    my $self     = shift;
+    my $pkgbuild = shift;
+    my $pkbd     = $self->pkgbuild($pkgbuild);
+    push @{ $self->{'results'} },
+      { $pkbd->pkgname => { pkgbuild => $pkbd->pkgver, upstream => "NOT IMPLEMENTED" } };
+    # HTTP Slap $pkbd->source
+    # If HTTP Slap returns anything but 200 or 30(1|2) fail it.
+    # Calculate md5sum maybe, compare with md5sum in PKGBUILD?
+}
+
+sub process_tt {
+    my $self = shift;
+    my $t    = $self->tt_obj;
+    my $asset_versions = $self->asset_versions;
+    my $hash = {};
+    $hash->{'items'}    = $self->{'results'};
+    $hash->{'gen_date'} = $self->time_now;
+    map { $hash->{$_} = $asset_versions->{$_} } keys %{$asset_versions};
+    my $out = undef;    #$self->html_file;
+    open my $OUT, ">", $self->html_file;
+    my $hush_it = $t->process( $self->html_tt, $hash, $OUT );
+    close $OUT;
+    return 0;
+}
+
+sub html_tt {
+    my $self = shift;
+    my $html = q{<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <title> AUR vs Upstream as of [% gen_date %] </title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+        <!--[if lt IE 9]>
+        <script src="//cdnjs.cloudflare.com/ajax/libs/html5shiv/[%- html5shiv %]/html5shiv.min.js"></script>
+        <script src="//cdnjs.cloudflare.com/ajax/libs/respond.js/[%- respondjs %]/respond.min.js"></script>
+        <![endif]-->
+        <link href="//cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/[%- bootstrap %]/css/bootstrap.min.css" rel="stylesheet" />
+        <!--link href="//cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/[%- bootstrap %]/css/bootstrap-theme.min.css" rel="stylesheet" /-->
+    </head>
+    <body>
+      <div class="container">
+        <h2> AUR vs Upstream as of [% gen_date %] </h2>
+        <div class="button">
+            <button type="button" class="btn btn-danger" onClick="javascript:unflagged_tgl();">Toggle Unflagged</button>&nbsp;
+            <button type="button" class="btn btn-warning" onClick="javascript:not_implemented_tgl();">Toggle Not Implemented</button>
+        </div>
+        <br />
+            <table border="1" class="sortable-theme-finder" data-sortable>
+                <tr>
+                    <th> Pkgbuild </th>
+                    <th> AUR Version </th>
+                    <th> Upstream Version</th>
+                    <th> Out of Date </th>
+                </tr>
+                [%- SET count = 0 %]
+                [%- FOREACH item IN items.sort %]
+                [%- FOREACH i IN item.keys.sort %]
+                [%- IF item.$i.pkgbuild != item.$i.upstream %]
+                    [%- IF item.$i.upstream != "NOT IMPLEMENTED" %]
+                        [%- SET color = "#DFD6AE" %]
+                        [%- SET status = "1" %]
+                        [%- SET status_class = "flagged" %]
+                        [%~ count = count + 1 %]
+                    [%- ELSE %]
+                        [%- SET color = "#DDDDDD" %]
+                        [%- SET status = "N/A" %]
+                        [%- SET status_class = "not_implemented" %]
+                    [%- END %]
+                [%- ELSE %]
+                    [%- SET color = "#F6F6F6" %]
+                    [%- SET status = "0" %]
+                    [%- SET status_class = "unflagged" %]
+                [%- END %]
+                <tr style="background-color: [%- color %]" class="[% status_class %]">
+                    <td><a target="_BLANK" href="https://aur.archlinux.org/packages/[%- i %]">[%- i %]</a></td>
+                    <td> [% item.$i.pkgbuild %] </td>
+                    <td> [% item.$i.upstream %] </td>
+                    <td> [% status %] </td>
+                </tr>
+                [%- END %]
+                [%- END %]
+            </table>
+            <h5>Total confirmed out of date pkgs: [% count %]</h5>
+      </div>
+        <script src="//cdnjs.cloudflare.com/ajax/libs/jquery/[%- jquery %]/jquery.min.js"></script>
+        <script>
+        var unflagged_tgl = function(){
+            $(".unflagged").toggle();
+        };
+        var not_implemented_tgl = function(){
+            $(".not_implemented").toggle();
+        };
+      </script>
+    </body>
+</html>
+    };
+    return \$html;
+}

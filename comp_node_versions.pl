@@ -47,8 +47,4 @@ sub aur_version {
     my $ver  = $pkg->version;
     $ver =~ s/\-\d?$//;
     return $ver;
-
-#    my $pkg  = $aur->find($name);
-#    print Dumper($pkg->pkgbuild->pkgver);
-#    return $pkg->pkgbuild->pkgver;
 }
